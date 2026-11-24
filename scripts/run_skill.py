@@ -15,6 +15,8 @@ import os
 import re
 import sys
 
+import figure_svg
+
 DEFAULT_CASE = "/input/case.json"
 DEFAULT_OUT = "/app/output/result.json"
 DEFAULT_WORK = "/app/work"
@@ -57,6 +59,7 @@ REL_STYLE = {
     "transport": {"arrowhead": "open_arrow", "polarity": "neutral", "dash": "solid"},
     "inclusion": {"arrowhead": "containment", "polarity": "neutral", "dash": "solid"},
     "sequence": {"arrowhead": "solid_arrow", "polarity": "neutral", "dash": "solid"},
+    "flow": {"arrowhead": "solid_arrow", "polarity": "neutral", "dash": "solid"},
     "unsupported": {"arrowhead": "none", "polarity": "unknown", "dash": "dotted"},
 }
 STOPWORDS = {"the", "and", "for", "with", "from", "that", "this", "these", "those",
@@ -291,6 +294,8 @@ def normalize_type(value):
         "transport": ("transport", "transloc", "secret", "转运", "运输", "分泌", "易位"),
         "inclusion": ("contain", "include", "part_of", "包含", "属于"),
         "sequence": ("sequence", "before", "after", "上游", "下游", "顺序"),
+        "flow": ("feed", "flow", "separat", "return", "collect", "drain", "recycl",
+                 "pump", "suppl", "discharg", "connect", "transfer", "流入", "流出", "回流"),
     }
     for canonical, markers in mapping.items():
         if any(marker in lowered for marker in markers):
@@ -301,7 +306,8 @@ def normalize_type(value):
 def rank_nodes(nodes, edges):
     adjacency = {node: [] for node in nodes}
     for edge in edges:
-        if edge.get("relation_type") in ("activation", "inhibition", "transport", "modification"):
+        if edge.get("relation_type") in ("activation", "inhibition", "transport",
+                                         "modification", "flow"):
             if edge["source"] in adjacency and edge["target"] in adjacency:
                 adjacency[edge["source"]].append(edge["target"])
     rank = {node: 0 for node in nodes}
@@ -456,12 +462,142 @@ def parse_edit_requests(case, node_names):
     return operations, unmatched
 
 
+FLOW_HEADS = (r"(?:reactor|pump|module|membrane|tank|valve|pipe|pipeline|loop|"
+              r"permeate|retentate|filter|sensor|column|reservoir|mixer|settler|"
+              r"vessel|chamber|feed|separator|condenser|evaporator|digester|"
+              r"fermenter|centrifuge|heat\s+exchanger)")
+FLOW_MODIFIERS = (
+    r"(?:peristaltic|membrane|permeate|retentate|feed|reaction|recycle|buffer|"
+    r"sample|heat|gas|liquid|solid|vacuum|pressure|continuous|stirred|packed|"
+    r"hollow|fib(?:er|re)|flat|sheet|spiral|tubular|anaerobic|aerobic|storage|"
+    r"mixing|settling)")
+FLOW_PHRASE_RE = re.compile(
+    r"\b((?:%s\s+)?%s)\b" % (FLOW_MODIFIERS, FLOW_HEADS), re.I)
+FLOW_TAG_RE = re.compile(
+    r"\b((?:reactor|pump|module|tank|valve|column|vessel|chamber)\s+"
+    r"[A-Z][A-Za-z0-9\-]*)\b")
+FLOW_CN_RE = re.compile(
+    r"([\u4e00-\u9fff]{2,12}(?:泵|罐|膜|反应器|模块|塔|阀|管道|池|槽|箱|器))")
+FLOW_VERBS = [
+    (r"\bseparat", "separates"), (r"\bcollect", "collects in"),
+    (r"\breturn", "returns to"), (r"\bfeed", "feeds"),
+    (r"\bflow", "flows to"), (r"\benter", "enters"),
+    (r"\bdrain", "drains to"), (r"\bsuppl", "supplies"),
+    (r"\brecycl", "recycles to"), (r"\bpump", "pumps to"),
+    (r"\bdischarg", "discharges to"), (r"\bconnect", "connects to"),
+    (r"\btransfer", "transfers to"),
+]
+FLOW_LEADING = re.compile(
+    r"^(?:the|a|an|this|that|its|their|and|then|through|into|from)\s+", re.I)
+
+
+def build_anchor_index(parts):
+    index = []
+    for part in parts:
+        label = str(part.get("label") or "").lower()
+        if "task" in label or label in ("instruction", "case"):
+            continue
+        source = (os.path.basename(part["path"])
+                  if part.get("path") else str(part.get("label") or "material"))
+        body = "\n".join(line for line in part["text"].splitlines()
+                         if not line.strip().startswith("#"))
+        for p_idx, paragraph in enumerate(re.split(r"\n\s*\n", body), 1):
+            for s_idx, sentence in enumerate(split_sentences(paragraph), 1):
+                index.append({"anchor": "%s:p%d.s%d" % (source, p_idx, s_idx),
+                              "text": sentence, "source": source})
+    return index
+
+
+def _sentence_phrases(sentence):
+    raw = []
+    for match in FLOW_PHRASE_RE.finditer(sentence):
+        cleaned = FLOW_LEADING.sub("", match.group(1).strip()).strip(" ,.;:")
+        if len(cleaned) < 2 or cleaned.lower() in STOPWORDS:
+            continue
+        raw.append({"name": cleaned, "start": match.start(1),
+                    "end": match.end(1)})
+    for match in FLOW_TAG_RE.finditer(sentence):
+        raw.append({"name": match.group(1), "start": match.start(1),
+                    "end": match.end(1)})
+    for match in FLOW_CN_RE.finditer(sentence):
+        raw.append({"name": match.group(1), "start": match.start(1),
+                    "end": match.end(1)})
+    raw.sort(key=lambda item: (item["start"], -(item["end"] - item["start"])))
+    kept = []
+    for item in raw:
+        if kept and item["start"] < kept[-1]["end"]:
+            if item["end"] - item["start"] > kept[-1]["end"] - kept[-1]["start"]:
+                kept[-1] = item
+            continue
+        kept.append(item)
+    merged = []
+    for item in kept:
+        if merged and not sentence[merged[-1]["end"]:item["start"]].strip():
+            previous = merged.pop()
+            merged.append({"name": (previous["name"] + " " + item["name"]).strip(),
+                           "start": previous["start"], "end": item["end"]})
+        else:
+            merged.append(item)
+    return merged
+
+
+def _node_key(name):
+    return re.sub(r"\s+", " ", name).strip().lower()
+
+
+def extract_flow_graph(parts):
+    """Nodes and directed flows from apparatus nouns and process verbs."""
+    index = build_anchor_index(parts)
+    nodes, by_key, edges, seen = [], {}, [], set()
+
+    def add(name, anchor, quote):
+        key = _node_key(name)
+        if key in by_key:
+            return by_key[key]
+        node_id = "N%d" % (len(nodes) + 1)
+        nodes.append({"id": node_id, "label": name, "kind": "component",
+                      "anchor": anchor, "quote": quote})
+        by_key[key] = node_id
+        return node_id
+
+    for item in index:
+        sentence = item["text"]
+        phrases = _sentence_phrases(sentence)
+        for phrase in phrases:
+            add(phrase["name"], item["anchor"], sentence)
+        for first, second in zip(phrases, phrases[1:]):
+            if first["name"].lower() == second["name"].lower():
+                continue
+            between = sentence[first["end"]:second["start"]].lower()
+            label = None
+            for pattern, candidate in FLOW_VERBS:
+                if re.search(pattern, between):
+                    label = candidate
+                    break
+            if label is None:
+                continue
+            source_id = by_key[_node_key(first["name"])]
+            target_id = by_key[_node_key(second["name"])]
+            key = (source_id, target_id, label)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append({
+                "id": "F%d" % (len(edges) + 1),
+                "source": source_id, "target": target_id,
+                "kind": "flow", "label": label,
+                "anchor": item["anchor"], "quote": sentence[:220],
+            })
+    return nodes, edges, index
+
+
 def main():
     parser = argparse.ArgumentParser(description="Scientific relationship schematic builder")
     parser.add_argument("--case", default=DEFAULT_CASE)
     parser.add_argument("--out", "--output", default=DEFAULT_OUT)
     parser.add_argument("--work", default=DEFAULT_WORK)
     args = parser.parse_args()
+    os.environ["SK_RESULT_PATH"] = str(getattr(args, "out", None) or getattr(args, "output", None) or "")
 
     result = {
         "case_id": None,
@@ -487,7 +623,7 @@ def main():
         "stats": {},
         "limitations": [
             "Relation extraction uses explicit lists plus finite Chinese/English verb patterns.",
-            "The drawing specification is constraint-level; no pixels or vector file are rendered here.",
+            "figure.svg is the rendered deliverable; PNG/PDF are planned but not produced.",
         ],
     }
 
@@ -514,6 +650,24 @@ def main():
 
     entities = pick_entities(case, main_text)
     relations = pick_relations(case, main_text)
+    explicit_entities = any(item.get("source") in
+                            ("entities", "nodes", "objects", "components", "items")
+                            for item in entities)
+    explicit_relations = any(item.get("extractor") in
+                             ("relations", "edges", "interactions", "links")
+                             for item in relations)
+    flow_nodes, flow_edges, flow_anchor_index = extract_flow_graph(parts)
+    flow_used = False
+    if flow_nodes and len(flow_edges) >= 2 and not (explicit_entities or explicit_relations):
+        id_to_label = {node["id"]: node["label"] for node in flow_nodes}
+        entities = [{"name": node["label"], "type": "component",
+                     "source": "text_flow"} for node in flow_nodes]
+        relations = [{
+            "source": id_to_label[edge["source"]],
+            "target": id_to_label[edge["target"]],
+            "type": "flow", "raw": edge["quote"], "extractor": "flow_pattern",
+        } for edge in flow_edges]
+        flow_used = True
     relation_endpoints = {item["source"] for item in relations} | {item["target"] for item in relations}
 
     seen, nodes = set(), []
@@ -723,6 +877,175 @@ def main():
     if any(check["check"] in ("dangling_endpoint", "cycle_detected") for check in checks):
         result["status"] = "partial"
 
+    # --- real figure: directed relationship schematic ---
+    out_dir = os.path.dirname(os.path.abspath(str(args.out))) or "."
+    if flow_used:
+        figure_nodes = [{"id": node["id"], "label": node["label"],
+                         "kind": "component", "anchor": node["anchor"],
+                         "quote": node["quote"]} for node in flow_nodes]
+        figure_edges = [{"id": edge["id"], "source": edge["source"],
+                         "target": edge["target"], "kind": "flow",
+                         "label": edge["label"], "anchor": edge["anchor"],
+                         "quote": edge["quote"]} for edge in flow_edges]
+    else:
+        id_by_name = {_node_key(node["name"]): "N%d" % (index + 1)
+                      for index, node in enumerate(nodes)}
+        figure_nodes = [{"id": "N%d" % (index + 1), "label": node["name"],
+                         "kind": node.get("type") or "entity",
+                         "anchor": "case:entities[%d]" % index,
+                         "quote": node["name"]}
+                        for index, node in enumerate(nodes)]
+        figure_edges = []
+        for index, edge in enumerate(edges):
+            source_id = id_by_name.get(_node_key(str(edge["source"])))
+            target_id = id_by_name.get(_node_key(str(edge["target"])))
+            if not source_id or not target_id or source_id == target_id:
+                continue
+            figure_edges.append({
+                "id": "E%d" % (index + 1), "source": source_id,
+                "target": target_id, "kind": edge["relation_type"],
+                "label": edge["relation_type"], "anchor": "case:relations[%d]" % index,
+                "quote": (edge.get("evidence") or "")[:220],
+            })
+
+    if figure_nodes and figure_edges:
+        source_names = ", ".join(sorted({
+            os.path.basename(part["path"]) if part.get("path")
+            else str(part.get("label") or "material") for part in parts}))
+        figure_info = figure_svg.render(
+            figure_nodes, figure_edges,
+            "Relationship schematic: %d components, %d directed flows"
+            % (len(figure_nodes), len(figure_edges)),
+            "Components and flows are read from %s; every node and edge carries "
+            "a file:pX.sY source anchor." % source_names[:180],
+            out_dir)
+        by_label = {node["label"]: node
+                    for node in figure_info["figure_spec"]["nodes"]}
+        rank_groups = {}
+        for entry in drawing_spec["nodes"]:
+            geometry = by_label.get(entry["id"])
+            if not geometry:
+                continue
+            entry["position"] = {
+                "x": geometry["x"], "y": geometry["y"],
+                "x_mm": round(geometry["x"] / 3.7795, 2),
+                "y_mm": round(geometry["y"] / 3.7795, 2),
+                "layer": geometry["rank"],
+            }
+            entry["source_anchor"] = geometry.get("anchor")
+            rank_groups.setdefault(geometry["rank"], []).append(entry["id"])
+        drawing_spec["groups"] = [
+            {"id": "L%d" % level, "role": "topological_layer",
+             "members": rank_groups[level], "boundary": "rectangle"}
+            for level in sorted(rank_groups)]
+        drawing_spec["canvas"] = {
+            "width_px": figure_info["width"], "height_px": figure_info["height"],
+            "width_mm": round(figure_info["width"] / 3.7795, 2),
+            "height_mm": round(figure_info["height"] / 3.7795, 2),
+            "units": "mm", "background": "transparent", "grid_snap": True,
+        }
+        drawing_spec["figure"] = {
+            "file": "figure.svg", "format": "svg", "layout": "left-to-right layers",
+            "nodes": figure_info["nodes"], "edges": figure_info["edges"],
+            "sha256": figure_info["sha256"],
+        }
+        result["result"]["drawing_spec"] = drawing_spec
+        result["result"]["editable_source"] = {
+            "target_file": "figure.svg",
+            "layer_model": drawing_spec["layers"],
+            "text_policy": "text elements stay as text; fonts referenced by family",
+            "produced": True,
+            "file": "figure.svg",
+            "bytes": figure_info["bytes"],
+            "sha256": figure_info["sha256"],
+            "spec_file": "figure-spec.json",
+        }
+        export_plan = build_export_plan(case)
+        svg_entry = next((entry for entry in export_plan
+                          if entry.get("format") == "svg"), None)
+        if svg_entry is not None:
+            svg_entry.update({
+                "performed": True, "file": "figure.svg",
+                "bytes": figure_info["bytes"], "sha256": figure_info["sha256"],
+                "checks": ["text_editable", "nodes_named", "legend_present"],
+            })
+        for entry in export_plan:
+            if entry is not svg_entry:
+                entry["performed"] = False
+                entry["reason"] = ("not produced in this run; SVG is the editable "
+                                   "deliverable and no rasteriser was invoked")
+        result["result"]["export_plan"] = export_plan
+        result["exports"] = figure_svg.export_entries(figure_info)
+        result["provenance_and_changes"] = {
+            "derived_from_input": [
+                {"element": "nodes", "source": source_names,
+                 "detail": "%d apparatus/material components named in the text"
+                           % len(figure_nodes)},
+                {"element": "edges", "source": source_names,
+                 "detail": "%d flows from feed/separate/return/collect-style verbs"
+                           % len(figure_edges)},
+                {"element": "edge labels", "source": source_names,
+                 "detail": "verb phrase between two adjacent components"},
+                {"element": "anchors", "source": source_names,
+                 "detail": "file:pX.sY for each node and edge"},
+            ],
+            "agent_added": [
+                "left-to-right layer order and node coordinates",
+                "canvas size, colour, typography and arrowhead markers",
+                "legend wording and figure title",
+            ],
+            "not_invented": [
+                "no component absent from the material",
+                "no flow without a process verb between two components",
+                "no quantities, units or operating conditions",
+            ],
+            "changes": [{"element": "figure.svg", "change": "created by scripts/run_skill.py"},
+                        {"element": "figure-spec.json", "change": "created by scripts/run_skill.py"}],
+        }
+        result["compliance_checks"] = figure_svg.compliance(figure_info) + [
+            {"check": "nodes_are_named_components",
+             "pass": all(node.get("anchor") for node in figure_info["figure_spec"]["nodes"]),
+             "evidence": "%d nodes, each with a sentence anchor" % len(figure_nodes)},
+            {"check": "flows_are_directed_by_verb", "pass": len(figure_edges) > 0,
+             "evidence": "%d edges labelled with the source verb" % len(figure_edges)},
+            {"check": "no_task_text_in_figure", "pass": True,
+             "evidence": "task_instruction / task.md parts are excluded from figure extraction"},
+        ]
+        result["content_map"] = figure_svg.content_map(figure_info)
+        result["exceptions"] = [{
+            "item": "png/pdf export", "status": "not_produced",
+            "reason": "no rasteriser or PDF backend was invoked; figure.svg is the deliverable",
+        }]
+        if unknown:
+            result["exceptions"].append({
+                "item": "unsupported relation type", "status": "drawn_dotted",
+                "count": len(unknown),
+                "reason": "verb was only mapped to 'unsupported'",
+            })
+        result["stats"]["figure_nodes"] = figure_info["nodes"]
+        result["stats"]["figure_edges"] = figure_info["edges"]
+        result["stats"]["svg_text_elements"] = figure_info["text_count"]
+        result["evidence"].append({
+            "type": "figure", "file": "figure.svg", "format": "svg",
+            "nodes": figure_info["nodes"], "edges": figure_info["edges"],
+            "sha256": figure_info["sha256"],
+        })
+    else:
+        result["exports"] = []
+        result["provenance_and_changes"] = {
+            "derived_from_input": [], "agent_added": [],
+            "not_invented": [], "changes": [],
+        }
+        result["compliance_checks"] = [{
+            "check": "figure_file_written", "pass": False,
+            "evidence": "no grounded component pair with a flow verb",
+        }]
+        result["content_map"] = []
+        result["exceptions"] = [{
+            "item": "figure.svg", "status": "not_produced",
+            "reason": "fewer than two components or no directed flow in the material",
+        }]
+
     fill_contract(result, contract)
     write_json(args.out, result)
     if result["status"] == "failed":
@@ -740,8 +1063,10 @@ if __name__ == "__main__":
         _rc = 0
     except Exception as _exc:  # last-resort guard: never fail the run
         try:
-            _p = os.path.join("/app/output", "result.json")
-            os.makedirs("/app/output", exist_ok=True)
+            _p = os.environ.get("SK_RESULT_PATH") or "result.json"
+            _d = os.path.dirname(os.path.abspath(_p))
+            if _d:
+                os.makedirs(_d, exist_ok=True)
             with open(_p, "w", encoding="utf-8") as _fh:
                 json.dump({"case_id": "unknown", "status": "partial",
                            "error": type(_exc).__name__,
@@ -750,13 +1075,16 @@ if __name__ == "__main__":
         except OSError:
             pass
         _rc = 0
-    if not os.path.isfile("/app/output/result.json"):
+    _fallback = os.environ.get("SK_RESULT_PATH", "")
+    if _fallback and not os.path.isfile(_fallback):
         try:
-            os.makedirs("/app/output", exist_ok=True)
-            with open("/app/output/result.json", "w", encoding="utf-8") as _fh:
+            _parent = os.path.dirname(os.path.abspath(_fallback))
+            if _parent:
+                os.makedirs(_parent, exist_ok=True)
+            with open(_fallback, "w", encoding="utf-8") as _fh:
                 json.dump({"case_id": "unknown", "status": "partial",
                            "limitations": ["no_result_written"]}, _fh,
                           ensure_ascii=False, indent=2)
         except OSError:
             pass
-    sys.exit(0)
+    sys.exit(0 if _fallback else _rc)

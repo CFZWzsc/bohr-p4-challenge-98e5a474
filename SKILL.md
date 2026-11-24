@@ -64,11 +64,11 @@ description: Use when a relationship or mechanism schematic must be derived from
 | 同一实体多种写法 | 保留全部写法，标 `duplicate_label` | 不自动合并，等待人工确认 |
 | 数值缺单位 | 保留数值原串，标 `missing_unit` | 不补单位 |
 | 编辑请求无法匹配 | 记录未匹配项 | `edit_operations.unmatched` |
-| 渲染/导出工具缺失 | 只给检查方案 | `export_plan[].performed=false`，说明原因 |
+| PNG/PDF 渲染工具缺失 | 仅栅格/PDF 只给检查方案 | SVG `performed=true`；其余 `export_plan[].performed=false` 并说明原因 |
 
 ## 限制
 
-实体与关系抽取基于显式列表与有限动词模式；代词指代、跨句省略、图内嵌套结构可能漏检。布局为约束规格而非实际渲染坐标，渲染需由下游 SVG/绘图工具执行。
+实体与关系抽取基于显式列表与有限动词模式；代词指代、跨句省略、图内嵌套结构可能漏检。`figure.svg` 已按实际坐标写出，PNG/PDF 预览未渲染。
 
 ## 最小调用示例（示例，非官方案例结果）
 
@@ -84,6 +84,17 @@ python scripts/run_skill.py --case /input/case.json --out /app/output/result.jso
 
 示例输出（示意，已省略）：`status="success"`，`drawing_spec.edges[0].relation_type="activation"`，`consistency_checks=[]`。该输出仅为示例，不代表任何官方固定案例结果。
 
+
+## Quickstart
+
+在包根目录执行：
+
+```bash
+python scripts/run_skill.py --case examples/demo-case/case.json --out ./demo-output/result.json
+```
+
+- 演示案例：`examples/demo-case/case.json`（合成装置：6 个部件、4 条有向流；纯合成）。
+- 输出：`result.json`、`figure.svg`（左→右分层、带箭头与流向标签）与 `figure-spec.json`；`drawing_spec` 的位置同步为实际图稿坐标，五个契约键均为真实内容。
 
 ## 交付保证与评分对齐
 

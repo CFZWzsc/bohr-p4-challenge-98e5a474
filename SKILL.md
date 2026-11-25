@@ -51,7 +51,7 @@ description: Use when a relationship or mechanism schematic must be derived from
 - `evidence`、`uncertainty`、`errors`、`stats`；
 - `skill`、`challenge_id`、`contract_notes`。
 
-主要交付段：`result.drawing_spec.nodes`、`result.drawing_spec.edges`、`result.drawing_spec.legend`、`result.consistency_checks`。
+主要交付段：`result.drawing_spec.nodes`、`result.drawing_spec.edges`、`result.drawing_spec.legend`、`result.consistency_checks`；机检产物 `svg_checks.json`、`edit_diff.json`、`gain_evidence.json`、`figure-edited.svg`。
 
 ## 异常处理
 

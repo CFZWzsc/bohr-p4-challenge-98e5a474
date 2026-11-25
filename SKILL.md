@@ -11,7 +11,7 @@ description: Use when a relationship or mechanism schematic must be derived from
 
 适用条件：任务提供 `/input/case.json`（或 `--case` 指定的等价案例），可能同时提供 `/input/task.md`。案例材料包含描述实体与关系的正文、实体表或关系表，要求交付示意图与可编辑来源。典型输入键：`entities`/`nodes`、`relations`/`edges`/`interactions`、`legend`、`export`、`edit_requests`，或包含这些信息的段落文本。
 
-不适用：不做统计检验与显著性计算；不把来源中没有的基因名、浓度、时间点、单位补进图里；不伪造渲染后的 PNG/PDF 像素结果——本 Skill 只产出可复现的结构化图稿规格与导出检查项。
+不适用：不做统计检验与显著性计算；不把来源中没有的基因名、浓度、时间点、单位补进图里；不伪造像素结果——PNG/PDF 均由同一图元树真实导出，未导出时如实记 `performed=false`。
 
 ## 输入
 
@@ -29,7 +29,7 @@ description: Use when a relationship or mechanism schematic must be derived from
 5. **布局与分层**：按关系方向计算拓扑层级，给出节点坐标约束、分组/区室边界、标签避让规则；不声称已渲染。
 6. **图例与编码**：把关系类型、极性、分组映射到线型、箭头、颜色，并生成图例项。
 7. **编辑操作**：读取 `edit_requests`，输出可执行的标签替换/节点增删/连边修改清单，标注未匹配项。
-8. **导出检查方案**：登记目标格式（SVG/PDF/PNG 等）与检查项（文字可编辑、字体嵌入、分辨率、色彩空间），逐项标注“计划执行”，不伪造检查结果。
+8. **导出与检查**：实际导出 SVG/PNG/PDF，登记检查项（文字可编辑、分辨率、渲染器）与真实结果，不伪造。
 9. **契约落盘**：保留 `case_id` 与 `output_contract` 全部字段，未支持字段写 `null` 并记录 `contract_notes`。
 
 ## 评分维度对应
@@ -64,11 +64,11 @@ description: Use when a relationship or mechanism schematic must be derived from
 | 同一实体多种写法 | 保留全部写法，标 `duplicate_label` | 不自动合并，等待人工确认 |
 | 数值缺单位 | 保留数值原串，标 `missing_unit` | 不补单位 |
 | 编辑请求无法匹配 | 记录未匹配项 | `edit_operations.unmatched` |
-| PNG/PDF 渲染工具缺失 | 仅栅格/PDF 只给检查方案 | SVG `performed=true`；其余 `export_plan[].performed=false` 并说明原因 |
+| PNG/PDF 渲染工具缺失 | Pillow 缺失时用纯 Python 栅格兜底 | 记录 renderer/dpi；仍失败则 `performed=false` 并写明原因 |
 
 ## 限制
 
-实体与关系抽取基于显式列表与有限动词模式；代词指代、跨句省略、图内嵌套结构可能漏检。`figure.svg` 已按实际坐标写出，PNG/PDF 预览未渲染。
+实体与关系抽取基于显式列表与有限动词模式；代词指代、跨句省略、图内嵌套结构可能漏检。`figure.svg` 已按实际坐标写出，PNG/PDF 由同一图元树导出。
 
 ## 最小调用示例（示例，非官方案例结果）
 
@@ -121,7 +121,7 @@ python scripts/run_skill.py --case examples/demo-case/case.json --out ./demo-out
 ### 真实图稿与预览（本次必做）
 
 - 脚本只输出规格（且 `export_plan[].performed=false`）时，调用 Agent 必须依据规格真实写出可编辑 SVG 到 `/app/output/`：节点、边、分组、标签、图例均为可编辑元素。
-- 任务要求 PNG/PDF 或需要人工核看时，必须实际渲染预览文件；环境无栅格化工具时以真实 SVG 作为矢量预览，并在 `result.json` 写明格式、路径与原因。
+- PNG（300 dpi）与 PDF 由同一图元树真实导出，并记录渲染器与 dpi；无 Pillow 时退化为纯 Python 栅格预览，并在 `result.json` 写明原因。
 - 仅当文件真实落盘、可打开并核对后，才将源文件与导出项标记为已执行（`produced=true`、`performed=true`），并写入路径、字节数与 SHA-256；未执行的检查项如实写 `false` 与原因，不伪造渲染或检查结果。
 
 ## 最终交付强制要求

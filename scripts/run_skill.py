@@ -969,11 +969,22 @@ def main():
                 "bytes": figure_info["bytes"], "sha256": figure_info["sha256"],
                 "checks": ["text_editable", "nodes_named", "legend_present"],
             })
+        previews = {"png": figure_info.get("png"), "pdf": figure_info.get("pdf")}
         for entry in export_plan:
-            if entry is not svg_entry:
+            if entry is svg_entry:
+                continue
+            preview = previews.get(str(entry.get("format", "")).lower())
+            if preview:
+                entry.update({"performed": True, "file": preview["file"],
+                               "bytes": preview["bytes"],
+                               "sha256": preview["sha256"],
+                               "renderer": preview["renderer"],
+                               "dpi": preview["dpi"]})
+                entry.pop("reason", None)
+            else:
                 entry["performed"] = False
-                entry["reason"] = ("not produced in this run; SVG is the editable "
-                                   "deliverable and no rasteriser was invoked")
+                entry["reason"] = ("not produced in this run: no raster or PDF "
+                                   "backend was available")
         result["result"]["export_plan"] = export_plan
         result["exports"] = figure_svg.export_entries(figure_info)
         result["provenance_and_changes"] = {
@@ -1012,9 +1023,9 @@ def main():
              "evidence": "task_instruction / task.md parts are excluded from figure extraction"},
         ]
         result["content_map"] = figure_svg.content_map(figure_info)
-        result["exceptions"] = [{
+        result["exceptions"] = [] if (figure_info.get("png") and figure_info.get("pdf")) else [{
             "item": "png/pdf export", "status": "not_produced",
-            "reason": "no rasteriser or PDF backend was invoked; figure.svg is the deliverable",
+            "reason": figure_info.get("preview_log") or "no raster or PDF backend available",
         }]
         if unknown:
             result["exceptions"].append({

@@ -1,42 +1,33 @@
-# Runtime contract
+# 科研示意图生成与编辑 Skill
 
-Bohrium Playground Period 4 submission — challenge `challenge-98e5a474` (track: `scientific-graphics`).
+从论文材料抽取实体、区室与关系，画成分层、可编辑的科研示意图（SVG），
+并导出 300 dpi 的 `figure.png` 与 `figure.pdf`。Python 标准库实现，离线、确定性。
 
-This repository holds the complete skill package for the challenge: the skill
-definition, its executable pipeline and all supporting documents. No precomputed
-answers, private data or credentials are included.
-
-## Skill
-
-- Name: `scientific-relationship-schematic`
-- Summary: Use when a relationship or mechanism schematic must be derived from source material and delivered as an editable figure specification together with an export plan.
-
-## Contents
-
-| File |
-|------|
-| `SKILL.md` |
-| `examples/demo-case/case.json` |
-| `examples/demo-case/material.md` |
-| `examples/demo-case/task.md` |
-| `scripts/figure_svg.py` |
-| `scripts/run_skill.py` |
-| `README.md` |
-
-## How to run
+## 使用
 
 ```bash
-python scripts/run_skill.py --case /input/case.json --output /app/output/result.json
+python scripts/run_skill.py --case examples/demo-case/case.json \
+    --out /app/output/result.json --work /app/work
 ```
 
-A single deterministic pass reads `/input`, computes the deliverable and writes a
-contract-complete `/app/output/result.json` plus the human-readable review files
-described in `SKILL.md`. The same input always produces byte-identical output; no
-network access is used, and fields the materials cannot support are reported
-explicitly instead of being left empty.
+- 输入：`case.json`、`task.md`、来源材料（实体清单或正文段落）。
+- 输出：`result.json`（契约键 `case_id`/`status`/`editable_source`/`export_artifact`/
+  `content_map`/`compliance_checks`/`exceptions`）、`figure.svg`、`figure-spec.json`、
+  `figure.png`、`figure.pdf`。
 
-## Notes
+## 设计要点
 
-- Pure Python standard library; no network access required.
-- Every claim is anchored to paragraph-level evidence; unknown items are reported
-  in `uncertainty` instead of being fabricated.
+- **不编造**：实体与关系只取材料原文，每条边附原文句子；无依据的关系用虚线"关联"
+  并在 `exceptions` 说明，绝不画反向抑制。
+- **图面规范**：区室/泳道分层、关系线型与图例一一对应、色盲友好配色、文字全部 `<text>`。
+- **可编辑**：语义化 `id`（`node-*`、`edge-*`、`legend`），节点坐标写入 `figure-spec.json`。
+- **可核验**：`compliance_checks` 覆盖锚点、箭头标记、图例覆盖、画布包含、PNG 非空白像素。
+- **确定性**：布局只依赖有序输入，无随机数与时间戳，双跑逐字节一致。
+
+## 验证
+
+```bash
+python scripts/run_skill.py --case examples/demo-case/case.json --out /tmp/r1/result.json --work /tmp/r1
+python scripts/run_skill.py --case examples/demo-case/case.json --out /tmp/r2/result.json --work /tmp/r2
+# 两次产物 sha256 应完全一致
+```
